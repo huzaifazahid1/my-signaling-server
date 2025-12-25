@@ -8,7 +8,7 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 // Serve the receiver files statically
-app.use(express.static(path.join(__dirname, '../receiver')));
+app.use(express.static(path.join(__dirname, './receiver')));
 
 // Map: roomId -> Set<WebSocket>
 const rooms = new Map();
