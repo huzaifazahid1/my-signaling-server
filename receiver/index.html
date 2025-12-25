@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Receiver</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: #f0f0f0; }
+        #status { margin-bottom: 20px; font-weight: bold; }
+        progress { width: 300px; height: 20px; display: none; }
+        #videoPlayer { max-width: 80%; display: none; border: 1px solid #ccc; background: black; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+    <h1>Video Receiver</h1>
+    <div id="status">Connecting...</div>
+    <progress id="progressBar" value="0" max="100"></progress>
+    <video id="videoPlayer" controls></video>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const roomId = urlParams.get('id');
+        // Auto-detect the WebSocket URL based on the current page's origin
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const SIGNALING_URL = `${protocol}//${window.location.host}`;
+
+        if (!roomId) {
+            document.getElementById('status').innerText = 'Error: No Room ID provided.';
+            document.getElementById('status').classList.add('error');
+            throw new Error('No Room ID');
+        }
+
+        const ws = new WebSocket(SIGNALING_URL);
+        const pc = new RTCPeerConnection({
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
+
+        let receivedSize = 0;
+        let fileSize = 0;
+        let fileBuffer = [];
+        
+        ws.onopen = () => {
+            document.getElementById('status').innerText = 'Connected to Signaling Server. Joining room...';
+            ws.send(JSON.stringify({ type: 'join', roomId }));
+        };
+
+        ws.onmessage = async (event) => {
+            const data = JSON.parse(event.data);
+
+            if (data.type === 'offer') {
+                document.getElementById('status').innerText = 'Received Offer. Accepting...';
+                await pc.setRemoteDescription(new RTCSessionDescription(data.payload));
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                ws.send(JSON.stringify({ type: 'answer', payload: answer }));
+            } else if (data.type === 'candidate') {
+                if (data.payload) {
+                    await pc.addIceCandidate(new RTCIceCandidate(data.payload));
+                }
+            } else if (data.type === 'peer-left') {
+                document.getElementById('status').innerText = 'Sender disconnected. Download failed.';
+                document.getElementById('status').classList.add('error');
+            }
+        };
+
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                ws.send(JSON.stringify({ type: 'candidate', payload: event.candidate }));
+            }
+        };
+
+        pc.ondatachannel = (event) => {
+            const channel = event.channel;
+            channel.onopen = () => {
+                document.getElementById('status').innerText = 'Connected to Sender. Waiting for data...';
+            };
+
+            channel.onmessage = (e) => {
+                const data = e.data;
+                
+                // First message is metadata (string)
+                if (typeof data === 'string') {
+                    const metadata = JSON.parse(data);
+                    if (metadata.type === 'metadata') {
+                        fileSize = metadata.size;
+                        document.getElementById('progressBar').style.display = 'block';
+                        document.getElementById('status').innerText = 'Receiving file...';
+                    }
+                    return;
+                }
+
+                // Subsequent messages are ArrayBuffers (chunks)
+                fileBuffer.push(data);
+                receivedSize += data.byteLength;
+                
+                const progress = (receivedSize / fileSize) * 100;
+                document.getElementById('progressBar').value = progress;
+
+                if (receivedSize >= fileSize) {
+                    document.getElementById('status').innerText = 'Download Complete! Processing...';
+                    const blob = new Blob(fileBuffer, { type: 'video/webm' });
+                    const url = URL.createObjectURL(blob);
+                    
+                    const video = document.getElementById('videoPlayer');
+                    video.src = url;
+                    video.style.display = 'block';
+                    video.play();
+                    
+                    // Trigger download
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `recording-${Date.now()}.webm`;
+                    a.click();
+                }
+            };
+        };
+    </script>
+</body>
+</html>
